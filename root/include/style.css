@@ -16,7 +16,7 @@ table th, table td {
     padding: 0.2em;
 }
 
-table tr#even {
+table tr.even {
     background: #fcfcfc;
 }
 
@@ -55,6 +55,25 @@ abbr {
     border-bottom: 1px dotted;
 }
 
+/* new clearfix */
+.clearfix:after {
+    visibility: hidden;
+    display: block;
+    font-size: 0;
+    content: " ";
+    clear: both;
+    height: 0;
+}
+
+* html .clearfix {
+    /* IE6 */
+    zoom: 1;
+}
+
+*:first-child+html .clearfix {
+    /* IE7 */
+    zoom: 1;
+}
 
 div#menu a {
     font-weight: bold;
@@ -253,7 +272,7 @@ div#wholecolumn {
     clear: both;
 }
 
-div#boxtitle {
+div.boxtitle {
     padding-top: 20px;
     margin-bottom: 5px;
     height: auto;
@@ -295,3 +314,13 @@ a#command {
     background: #BA6569;
 }
 
+/* "Latest CM activites" box */
+table.cm_latest_activities {
+    /* Required for word-wrap to work properly */
+    table-layout: fixed;
+}
+
+table.cm_latest_activities td {
+    /* Activity names might get lengthy */
+    word-wrap: break-word;
+}

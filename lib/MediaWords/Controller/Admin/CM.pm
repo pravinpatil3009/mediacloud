@@ -6,10 +6,16 @@ use strict;
 use warnings;
 
 use Digest::MD5;
+use JSON;
 use List::Compare;
+use Data::Dumper;
 
+use MediaWords::Solr;
 use MediaWords::CM::Dump;
 use MediaWords::CM::Mine;
+use MediaWords::DBI::Activities;
+
+use constant ROWS_PER_PAGE => 25;
 
 use base 'Catalyst::Controller::HTML::FormFu';
 
@@ -124,10 +130,34 @@ END
 
     my $latest_full_dump = get_latest_full_dump_with_time_slices( $db, $controversy_dumps, $controversy );
 
+    # Latest activities
+    my Readonly $LATEST_ACTIVITIES_COUNT = 20;
+
+    # Latest activities which directly or indirectly reference "controversies.controversies_id" = $controversies_id
+    my $sql_latest_activities =
+      MediaWords::DBI::Activities::sql_activities_which_reference_column( 'controversies.controversies_id',
+        $controversies_id );
+    $sql_latest_activities .= ' LIMIT ?';
+
+    my $latest_activities = $db->query( $sql_latest_activities, $LATEST_ACTIVITIES_COUNT )->hashes;
+
+    # FIXME put activity preparation (JSON decoding, description fetching) into
+    # a subroutine in order to not repeat oneself.
+    for ( my $x = 0 ; $x < scalar @{ $latest_activities } ; ++$x )
+    {
+        my $activity = $latest_activities->[ $x ];
+
+        # Get activity description
+        $activity->{ activity } = MediaWords::DBI::Activities::activity( $activity->{ name } );
+
+        $latest_activities->[ $x ] = $activity;
+    }
+
     $c->stash->{ controversy }       = $controversy;
     $c->stash->{ query }             = $query;
     $c->stash->{ controversy_dumps } = $controversy_dumps;
     $c->stash->{ latest_full_dump }  = $latest_full_dump;
+    $c->stash->{ latest_activities } = $latest_activities;
     $c->stash->{ template }          = 'cm/view.tt2';
 }
 
@@ -807,131 +837,118 @@ sub story : Local
 }
 
 # get the text for a sql query that returns all of the story ids that
-# match the given search query.  the search query uses a simplistic
-# plan of removing quote characters, splitting the line on spaces,
-# and finding all stories that include sentences that match all
-# of the given terms
+# match the given search query within solr.
 sub _get_stories_id_search_query
 {
     my ( $db, $q ) = @_;
 
-    $q ||= '';
-
-    $q =~ s/['"%]//g;
-
-    my $terms = [ split( /\s/, $q ) ];
-
-    return 'select stories_id from dump_story_link_counts' unless ( @{ $terms } );
-
-    my $queries = [];
-    for my $term ( @{ $terms } )
+    if ( defined( $q ) )
     {
-        my $qterm = $db->dbh->quote( lc( "%${ term }%" ) );
-        my $query = <<END;
-select slc.stories_id 
-    from dump_story_link_counts slc
-        join dump_stories s on ( s.stories_id = slc.stories_id )
-        join dump_media m on ( s.media_id = m.media_id )
-    where ( lower( s.title ) like $qterm or
-            lower( s.url ) like $qterm or 
-            lower( m.url ) like $qterm or
-            lower( m.name ) like $qterm )
-
-union
-
-select slc.stories_id 
-    from dump_story_link_counts slc
-        join stories_tags_map stm on ( slc.stories_id = stm.stories_id )
-        join tags t on ( stm.tags_id = t.tags_id )                
-    where ( lower( t.tag ) like $qterm )
-END
-        push( @{ $queries }, $query );
+        $q =~ s/^\s+//;
+        $q =~ s/\s+$//;
     }
 
-    return join( ' intersect ', map { "( $_ )" } @{ $queries } );
+    return 'select stories_id from dump_story_link_counts' unless ( $q );
+
+    my $period_stories_ids = $db->query( "select stories_id from dump_story_link_counts" )->flat;
+
+    my $stories_clause = "stories_id:(" . join( ' ', @{ $period_stories_ids } ) . ")";
+
+    my $stories_ids = MediaWords::Solr::search_for_stories_ids( { q => $q, fq => $stories_clause } );
+
+    return @{ $stories_ids } ? join( ',', @{ $stories_ids } ) : -1;
 }
 
-# if the serach query is a number and returns a story in the controversy,
-# add the story to the beginning of the search results
-sub _add_id_story_to_search_results ($$$)
-{
-    my ( $db, $stories, $query ) = @_;
-
-    return unless ( $query =~ /^[0-9]+$/ );
-
-    my $id_story = $db->query( <<END, $query )->hash;
-select s.*, m.name medium_name, slc.inlink_count, slc.outlink_count
-    from dump_stories s
-        join dump_story_link_counts slc on ( s.stories_id = slc.stories_id )
-        join dump_media m on ( s.media_id = m.media_id )
-     where s.stories_id = ?
-END
-
-    if ( $id_story )
-    {
-        unshift( @{ $stories }, $id_story );
-    }
-}
-
-# get the top 1000 words used by the given set of stories, sorted by tfidf against all words
+# get the top words used by the given set of stories, sorted by tfidf against all words
 # in the controversy
-sub _get_story_words ($$$)
+sub _get_story_words ($$$$)
 {
-    my ( $db, $c, $stories ) = @_;
+    my ( $db, $c, $stories_ids, $controversy ) = @_;
 
-    my $stories_id_list = join( ',', map { $_->{ stories_id } } @{ $stories } );
-
-    my $order_by = $c->req->params->{ raw_word_count } ? 'stem_count' : 'tfidf';
-    my $num_words = int( log( scalar( @{ $stories } ) + 1 ) * 100 );
+    my $num_words = int( log( scalar( @{ $stories_ids } ) + 1 ) * 10 );
     $num_words = ( $num_words < 1000 ) ? $num_words : 1000;
 
-    # make sure the query planner knows that dump_period_stories is relatively small.
-    $db->query( "analyze dump_period_stories" );
+    my $tag = MediaWords::Util::Tags::lookup_tag( $db, "controversy_$controversy->{ name }:all" );
 
-    $db->query( <<END );
-create table web_story_words as
-    select ssw.stem, min( ssw.term ) term, sum( stem_count ) stem_count
-        from story_sentence_words ssw
-        where 
-            ssw.stories_id in ( $stories_id_list ) and
-            not is_stop_stem( 'short', ssw.stem, null::text )
-        group by ssw.stem
-        order by stem_count desc
-        limit $num_words
-END
+    die( "Unable to find controversy tag" ) unless ( $tag );
 
-    my $words = $db->query( <<END )->hashes;
-select query.stem, query.term, ( query.stem_count::float / corpus.stem_count::float )::float tfidf, 
-        query.stem_count query_stem_count, corpus.stem_count corpus_stem_count
-    from 
-        web_story_words query
-        join
-            ( 
-                select ssw.stem, sum( ssw.stem_count ) stem_count
-                    from story_sentence_words ssw
-                    where
-                        ssw.stem in ( select stem from web_story_words ) and
-                        ssw.stories_id in ( select stories_id from dump_period_stories )
-                    group by ssw.stem
-            ) corpus on query.stem = corpus.stem
-    order by $order_by desc
-END
+    my $stories_solr_query = "stories_id:(" . join( ' ', @{ $stories_ids } ) . ")";
+    my $story_words = MediaWords::Solr::count_words( { q => $stories_solr_query } );
 
-    return $words;
+    splice( @{ $story_words }, $num_words );
+
+    for my $story_word ( @{ $story_words } )
+    {
+        my $solr_df_query = "+tags_id_stories:" . $tag->{ tags_id } . " AND +sentence:" . $story_word->{ term };
+        my $df = MediaWords::Solr::get_num_found( { q => $solr_df_query } );
+
+        if ( $df )
+        {
+            $story_word->{ tfidf }       = $story_word->{ count } / sqrt( $df );
+            $story_word->{ total_count } = $df;
+        }
+        else
+        {
+            $story_word->{ tfidf } = 0;
+        }
+    }
+
+    if ( !$c->req->params->{ raw_word_count } )
+    {
+        @{ $story_words } = sort { $b->{ tfidf } <=> $a->{ tfidf } } @{ $story_words };
+    }
+
+    return $story_words;
 }
 
-# display a word cloud of story search results
-sub search_stories_words : Local
+# remove all stories in the stories_ids cgi param from the controversy
+sub remove_stories : Local
 {
     my ( $self, $c ) = @_;
 
-    $c->stash->{ generate_words } = 1;
+    my $db = $c->dbis;
 
-    $self->search_stories( $c );
+    my $cdts_id = $c->req->params->{ cdts };
+    my ( $cdts, $cd, $controversy ) = _get_controversy_objects( $db, $cdts_id );
 
-    $c->stash->{ title }    = "Words in Story Search for " . $c->stash->{ query };
-    $c->stash->{ template } = 'cm/words.tt2';
+    my $live             = $c->req->params->{ l };
+    my $stories_ids      = $c->req->params->{ stories_ids };
+    my $controversies_id = $controversy->{ controversies_id };
 
+    map { _remove_story_from_controversy( $db, $_, $controversies_id ) } @{ $stories_ids };
+
+    my $status_msg = scalar( @{ $stories_ids } ) . " stories removed from controversy.";
+    $c->res->redirect( $c->uri_for( "/admin/cm/view_time_slice/$cdts_id", { l => $live, status_msg => $status_msg } ) );
+}
+
+# display a tfidf word cloud of the words in the stories given in the stories_ids cgi param
+# compared to all stories in the given time slice
+sub word_cloud : Local
+{
+    my ( $self, $c ) = @_;
+
+    my $db = $c->dbis;
+
+    $db->begin;
+
+    my $cdts_id = $c->req->params->{ cdts };
+    my ( $cdts, $cd, $controversy ) = _get_controversy_objects( $db, $cdts_id );
+
+    my $live        = $c->req->params->{ l };
+    my $title       = $c->req->params->{ title };
+    my $stories_ids = $c->req->params->{ stories_ids };
+
+    print STDERR "word_cloud stories_ids: " . Dumper( $stories_ids ) . "\n";
+
+    my $words = _get_story_words( $db, $c, $stories_ids, $controversy );
+
+    $c->stash->{ cdts }             = $cdts;
+    $c->stash->{ controversy_dump } = $cd;
+    $c->stash->{ controversy }      = $controversy;
+    $c->stash->{ live }             = $live;
+    $c->stash->{ words }            = $words;
+    $c->stash->{ title }            = $title;
+    $c->stash->{ template }         = 'cm/words.tt2';
 }
 
 # do a basic story search based on the story sentences, title, url, media name, and media url
@@ -943,10 +960,11 @@ sub search_stories : Local
 
     $db->begin;
 
-    my $cdts_id = $c->req->params->{ cdts };
+    my $cdts_id = $c->req->params->{ cdts } + 0;
     my ( $cdts, $cd, $controversy ) = _get_controversy_objects( $db, $cdts_id );
 
     my $live = $c->req->params->{ l };
+    my $reason = $c->req->params->{ reason } || '';
 
     MediaWords::CM::Dump::setup_temporary_dump_tables( $db, $cdts, $controversy, $live );
 
@@ -963,11 +981,7 @@ select s.*, m.name medium_name, slc.inlink_count, slc.outlink_count
     order by slc.inlink_count desc
 END
 
-    _add_id_story_to_search_results( $db, $stories, $query );
-
     map { _add_story_date_info( $db, $_ ) } @{ $stories };
-
-    $c->stash->{ words } = _get_story_words( $db, $c, $stories ) if ( $c->stash->{ generate_words } );
 
     MediaWords::CM::Dump::discard_temp_tables( $db );
 
@@ -977,7 +991,25 @@ END
 
     if ( $c->req->params->{ remove_stories } )
     {
-        map { _remove_story_from_controversy( $db, $_->{ stories_id }, $controversies_id ) } @{ $stories };
+        $db->begin;
+
+        eval {
+            map {
+                _remove_story_from_controversy( $db, $_->{ stories_id },
+                    $controversies_id, $c->user->username, $reason, $cdts_id )
+            } @{ $stories };
+        };
+        if ( $@ )
+        {
+            $db->rollback;
+
+            my $error = "Unable to remove stories: $@";
+            $c->res->redirect( $c->uri_for( "/admin/cm/view_time_slice/$cdts_id", { l => $live, status_msg => $error } ) );
+            return;
+        }
+
+        $db->commit;
+
         my $status_msg = "stories removed from controversy.";
         $c->res->redirect( $c->uri_for( "/admin/cm/view_time_slice/$cdts_id", { l => $live, status_msg => $status_msg } ) );
         return;
@@ -1044,8 +1076,6 @@ select distinct m.*, mlc.inlink_count, mlc.outlink_count, mlc.story_count
     order by mlc.inlink_count desc
 END
 
-    _add_id_medium_to_search_results( $db, $media, $query );
-
     MediaWords::CM::Dump::discard_temp_tables( $db );
 
     $db->commit;
@@ -1059,38 +1089,38 @@ END
     $c->stash->{ template }         = 'cm/media.tt2';
 }
 
-# remove the given story from the given controversy
-sub _remove_story_from_controversy
+# remove the given story from the given controversy; die()s on error
+sub _remove_story_from_controversy($$$$$$)
 {
-    my ( $db, $stories_id, $controversies_id ) = @_;
+    my ( $db, $stories_id, $controversies_id, $user, $reason, $cdts_id ) = @_;
 
-    $db->query( <<END, $stories_id, $controversies_id );
-delete from controversy_stories where stories_id = ? and controversies_id = ?
-END
+    $reason ||= '';
 
-}
+    eval {
 
-# remove the given story from the controversy
-sub remove_story : Local
-{
-    my ( $self, $c, $stories_id ) = @_;
+        # Do the change
+        MediaWords::CM::Mine::remove_story_from_controversy( $db, $stories_id, $controversies_id );
 
-    my $db = $c->dbis;
+        # Log the activity
+        my $change = {
+            'stories_id' => $stories_id + 0,
+            'cdts_id'    => $cdts_id + 0
+        };
+        unless (
+            MediaWords::DBI::Activities::log_activity(
+                $db, 'cm_remove_story_from_controversy',
+                $user, $controversies_id, $reason, $change
+            )
+          )
+        {
+            die "Unable to log the story removal activity.";
+        }
 
-    $db->begin;
-
-    my $cdts_id = $c->req->params->{ cdts };
-    my $live    = $c->req->params->{ l };
-
-    my ( $cdts, $cd, $controversy ) = _get_controversy_objects( $db, $cdts_id );
-
-    _remove_story_from_controversy( $db, $stories_id, $controversy->{ controversies_id } );
-
-    $db->commit;
-
-    my $status_msg = "story has been removed from the live version of the controversy.";
-
-    $c->res->redirect( $c->uri_for( "/admin/cm/view_time_slice/$cdts_id", { l => $live, status_msg => $status_msg } ) );
+    };
+    if ( $@ )
+    {
+        die "Unable to remove story $stories_id from controversy $controversies_id: $@";
+    }
 }
 
 # merge source_media_id into target_media_id
@@ -1115,14 +1145,15 @@ sub merge_media : Local : FormConfig
 
     my $medium = _get_medium_from_dump_tables( $db, $media_id );
 
-    my $to_media_id = $c->req->param( 'to_media_id' );
+    my $to_media_id = $c->req->param( 'to_media_id' ) // 0;
+    $to_media_id = $to_media_id + 0;
     my $to_medium = _get_medium_from_dump_tables( $db, $to_media_id ) if ( $to_media_id );
 
     MediaWords::CM::Dump::discard_temp_tables( $db );
 
     $db->commit;
 
-    my $cdts_id = $cdts->{ controversy_dump_time_slices_id };
+    my $cdts_id = $cdts->{ controversy_dump_time_slices_id } + 0;
 
     if ( !$medium )
     {
@@ -1132,13 +1163,6 @@ sub merge_media : Local : FormConfig
         return;
     }
 
-    # my $form = $self->form;
-    #
-    # $form->load_config_filestem('root/forms/my/controller/bar');
-    #
-    # $form->process;
-    #
-    # $c->stash->{form} = $form;
     my $form = $c->stash->{ form };
 
     if ( !$form->submitted_and_valid )
@@ -1156,7 +1180,46 @@ sub merge_media : Local : FormConfig
         return;
     }
 
-    MediaWords::CM::Mine::merge_dup_medium_all_controversies( $db, $medium, $to_medium );
+    # Start transaction
+    $db->begin;
+
+    my $reason = $c->req->param( 'reason' ) || '';
+
+    # Make the merge
+    eval { MediaWords::CM::Mine::merge_dup_medium_all_controversies( $db, $medium, $to_medium ); };
+    if ( $@ )
+    {
+        $db->rollback;
+
+        my $error = "Unable to merge media: $@";
+        my $u = $c->uri_for( "/admin/cm/medium/$media_id", { cdts => $cdts_id, error_msg => $error } );
+        $c->response->redirect( $u );
+        return;
+    }
+
+    # Log the activity
+    my $change = {
+        'media_id'    => $media_id + 0,
+        'to_media_id' => $to_media_id + 0,
+        'cdts_id'     => $cdts_id + 0
+    };
+    unless (
+        MediaWords::DBI::Activities::log_activity(
+            $db, 'cm_media_merge', $c->user->username, $controversy->{ controversies_id } + 0,
+            $reason, $change
+        )
+      )
+    {
+        $db->rollback;
+
+        my $error = "Unable to log the activity of merging media.";
+        my $u = $c->uri_for( "/admin/cm/medium/$media_id", { cdts => $cdts_id, error_msg => $error } );
+        $c->response->redirect( $u );
+        return;
+    }
+
+    # Things went fine
+    $db->commit;
 
     my $status_msg = 'The media have been merged in all controversies.';
     my $u = $c->uri_for( "/admin/cm/medium/$to_media_id", { cdts => $cdts_id, status_msg => $status_msg, l => 1 } );
@@ -1186,7 +1249,7 @@ sub merge_stories : Local : FormConfig
 
     my $story = $db->query( "select * from dump_stories where stories_id = ?", $stories_id )->hash;
 
-    my $to_stories_id = $c->req->param( 'to_stories_id' );
+    my $to_stories_id = $c->req->param( 'to_stories_id' ) + 0;
     my $to_story = $db->query( "select * from dump_stories where stories_id = ?", $to_stories_id )->hash
       if ( $to_stories_id );
 
@@ -1194,7 +1257,7 @@ sub merge_stories : Local : FormConfig
 
     $db->commit;
 
-    my $cdts_id = $cdts->{ controversy_dump_time_slices_id };
+    my $cdts_id = $cdts->{ controversy_dump_time_slices_id } + 0;
 
     if ( !$story )
     {
@@ -1213,20 +1276,60 @@ sub merge_stories : Local : FormConfig
         return;
     }
 
+    # Start transaction
+    $db->begin;
+
+    my $reason = $c->req->param( 'reason' ) || '';
+
     if ( !$story )
     {
+        $db->rollback;
+
         my $error = 'The destination story no longer exists in the live data';
         my $u = $c->uri_for( "/admin/cm/story/$stories_id", { cdts => $cdts_id, error_msg => $error } );
         $c->response->redirect( $u );
         return;
     }
 
-    MediaWords::CM::Mine::merge_dup_story( $db, $controversy, $story, $to_story );
+    # Make the merge
+    eval { MediaWords::CM::Mine::merge_dup_story( $db, $controversy, $story, $to_story ); };
+    if ( $@ )
+    {
+        $db->rollback;
+
+        my $error = "Unable to merge stories: $@";
+        my $u = $c->uri_for( "/admin/cm/story/$stories_id", { cdts => $cdts_id, error_msg => $error } );
+        $c->response->redirect( $u );
+        return;
+    }
+
+    # Log the activity
+    my $change = {
+        'stories_id'    => $stories_id + 0,
+        'to_stories_id' => $to_stories_id + 0,
+        'cdts_id'       => $cdts_id + 0
+    };
+    unless (
+        MediaWords::DBI::Activities::log_activity(
+            $db, 'cm_story_merge', $c->user->username, $controversy->{ controversies_id } + 0,
+            $reason, $change
+        )
+      )
+    {
+        $db->rollback;
+
+        my $error = "Unable to log the activity of merging stories.";
+        my $u = $c->uri_for( "/admin/cm/story/$stories_id", { cdts => $cdts_id, error_msg => $error } );
+        $c->response->redirect( $u );
+        return;
+    }
+
+    # Things went fine
+    $db->commit;
 
     my $status_msg = 'The stories have been merged in this controversy.';
     my $u = $c->uri_for( "/admin/cm/story/$to_stories_id", { cdts => $cdts_id, status_msg => $status_msg, l => 1 } );
     $c->response->redirect( $u );
-    return;
 }
 
 # parse story ids and associated urls from param names, along
@@ -1304,6 +1407,53 @@ sub unredirect_medium : Local
     $c->stash->{ stories }     = $stories;
     $c->stash->{ medium }      = $medium;
     $c->stash->{ template }    = 'cm/unredirect_medium.tt2';
+}
+
+# List all activities
+sub activities : Local
+{
+    my ( $self, $c, $controversies_id ) = @_;
+
+    my $p = $c->request->param( 'p' ) || 1;
+
+    my $controversy = $c->dbis->query(
+        <<END,
+        SELECT *
+        FROM controversies
+        WHERE controversies_id = ?
+END
+        $controversies_id
+    )->hash;
+
+    # Activities which directly or indirectly reference "controversies.controversies_id" = $controversies_id
+    my $sql_activities =
+      MediaWords::DBI::Activities::sql_activities_which_reference_column( 'controversies.controversies_id',
+        $controversies_id );
+
+    my ( $activities, $pager ) = $c->dbis->query_paged_hashes( $sql_activities, [], $p, ROWS_PER_PAGE );
+
+    # FIXME put activity preparation (JSON decoding, description fetching) into
+    # a subroutine in order to not repeat oneself.
+    for ( my $x = 0 ; $x < scalar @{ $activities } ; ++$x )
+    {
+        my $activity = $activities->[ $x ];
+
+        # Get activity description
+        $activity->{ activity } = MediaWords::DBI::Activities::activity( $activity->{ name } );
+
+        # Decode activity descriptions from JSON
+        $activity->{ description } =
+          MediaWords::DBI::Activities::decode_activity_description( $activity->{ name }, $activity->{ description_json } );
+
+        $activities->[ $x ] = $activity;
+    }
+
+    $c->stash->{ controversy } = $controversy;
+    $c->stash->{ activities }  = $activities;
+    $c->stash->{ pager }       = $pager;
+    $c->stash->{ pager_url }   = $c->uri_for( '/admin/cm/activities/' . $controversies_id ) . '?';
+
+    $c->stash->{ template } = 'cm/activities.tt2';
 }
 
 1;
