@@ -1,6 +1,8 @@
-#!/usr/bin/perl -w
-
 package MediaWords::Solr::WordCounts;
+
+use Modern::Perl "2012";
+use MediaWords::CommonLibs;
+
 
 use strict;
 
@@ -43,10 +45,13 @@ sub word_count
         $solr = solr_connection();
     }
 
+    say Dumper( $query );
+
     say STDERR "calling python";
-    my $counts = get_word_counts( $solr, '*:*', $date, $count );
+    my $counts = get_word_counts( $solr, $query, $date, $count );
 
     say STDERR "returned from python";
+    #say STDERR Dumper( $counts );
 
     my $result = counts_to_db_style( $counts );
 
