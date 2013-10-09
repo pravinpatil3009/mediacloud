@@ -3,7 +3,6 @@ package MediaWords::Solr::WordCounts;
 use Modern::Perl "2012";
 use MediaWords::CommonLibs;
 
-
 use strict;
 
 use 5.14.0;
@@ -51,6 +50,7 @@ sub word_count
     my $counts = get_word_counts( $solr, $query, $date, $count );
 
     say STDERR "returned from python";
+
     #say STDERR Dumper( $counts );
 
     my $result = counts_to_db_style( $counts );
