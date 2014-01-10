@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<solr persistent="false">
+
+	<cores adminPath="/admin/cores" defaultCoreName="${solr.default.core.name}" host="${host:}" hostPort="${jetty.port:}" hostContext="${hostContext:}" zkClientTimeout="${zkClientTimeout:15000}">
+		<core name="${solr.default.core.name}" instanceDir="${solr.default.core.directory}" />
+	</cores>
+
+</solr>
