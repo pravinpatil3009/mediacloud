@@ -45,7 +45,7 @@
     that avoids logging every request
 -->
 
-<schema name="example" version="1.5">
+<schema name="media cloud story text" version="1.5">
   <!-- attribute "name" is the name of this schema and is only used for display purposes.
        version="x.y" is Solr's version number for the schema syntax and 
        semantics.  It should not normally be changed by applications.
@@ -105,36 +105,38 @@
       and back compatibility is not guaranteed.  Names with both leading and
       trailing underscores (e.g. _version_) are reserved.
    -->
-
-   <!-- If you remove this field, you must _also_ disable the update log in solrconfig.xml
-      or Solr won't start. _version_ and update log are required for SolrCloud
-   --> 
-   <field name="_version_" type="long" indexed="true" stored="true"/>
-   
-   <!-- points to the root document of a block of nested documents. Required for nested
-      document support, may be removed otherwise
-   -->
-   <field name="_root_" type="string" indexed="true" stored="false"/>
-
-   <!-- Only remove the "id" field if you have a very good reason to. While not strictly
-     required, it is highly recommended. A <uniqueKey> is present in almost all Solr 
-     installations. See the <uniqueKey> declaration below where <uniqueKey> is set to "id".
-   -->   
-   <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false" /> 
         
-   <field name="sku" type="text_en_splitting_tight" indexed="true" stored="true" omitNorms="true"/>
-   <field name="name" type="text_general" indexed="true" stored="true"/>
-   <field name="manu" type="text_general" indexed="true" stored="true" omitNorms="true"/>
-   <field name="cat" type="string" indexed="true" stored="true" multiValued="true"/>
-   <field name="features" type="text_general" indexed="true" stored="true" multiValued="true"/>
-   <field name="includes" type="text_general" indexed="true" stored="true" termVectors="true" termPositions="true" termOffsets="true" />
+   <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false" /> 
+   <field name="story_sentences_id" type="string" indexed="true" stored="true" required="false" multiValued="false" /> 
+   <field name="media_id" type="int" indexed="true" stored="true" required="false" multiValued="false" /> 
+   <field name="media_id_inner" type="int" indexed="true" stored="true" required="false" multiValued="false" /> 
 
-   <field name="weight" type="float" indexed="true" stored="true"/>
-   <field name="price"  type="float" indexed="true" stored="true"/>
-   <field name="popularity" type="int" indexed="true" stored="true" />
-   <field name="inStock" type="boolean" indexed="true" stored="true" />
+   <field name="stories_id" type="int" indexed="true" stored="true" required="false" multiValued="false" /> 
+   <field name="sentence_number" type="int" indexed="true" stored="true" required="false" multiValued="false" /> 
 
-   <field name="store" type="location" indexed="true" stored="true"/>
+   <field name="sentence"  type="text_general" indexed="true" stored="true" termVectors="true" termPositions="true" termOffsets="true" /> 
+   <field name="title" type="text_general" indexed="true" stored="true" multiValued="false"/>
+
+   <field name="publish_date" type="date" indexed="true" stored="true"/>
+
+   <field name="solr_import_date" type="date" indexed="true" stored="true"/>
+
+   <!-- language field from the story_sentences table - 3 letter code -->
+   <field name="language" type="string" indexed="true" stored="true"/>
+
+   <field name="media_sets_id" type="int" indexed="true" stored="true" multiValued="true" />
+   <field name="tags_id_stories" type="int" indexed="true" stored="true" multiValued="true" />
+   <field name="tags_id_media" type="int" indexed="true" stored="true" multiValued="true" />
+
+   <field name="field_type" type="string" indexed="true" stored="true" />
+   
+   <field name="includes" type="text_en" indexed="true" stored="false" termVectors="true" termPositions="true" termOffsets="true" />
+   <field name="sen_text_ws" type="text_ws" indexed="true" stored="false" termVectors="true" termPositions="true" termOffsets="true" />
+   <field name="sen_string" type="string" indexed="true" stored="true" termVectors="true" termPositions="true" termOffsets="true" />
+
+   <field name="includes_docvalues" type="string" indexed="true" stored="true" multiValued="true"  docValues="true" />
+   <field name="includes_docvalues2" type="string" indexed="true" stored="true" multiValued="true" docValues="true" />
+
 
    <!-- Common metadata fields, named specifically to match up with
      SolrCell metadata when parsing rich documents such as Word, PDF.
@@ -144,7 +146,6 @@
        "content_type": From the HTTP headers of incoming stream
        "resourcename": From SolrCell request param resource.name
    -->
-   <field name="title" type="text_general" indexed="true" stored="true" multiValued="true"/>
    <field name="subject" type="text_general" indexed="true" stored="true"/>
    <field name="description" type="text_general" indexed="true" stored="true"/>
    <field name="comments" type="text_general" indexed="true" stored="true"/>
@@ -178,14 +179,13 @@
 
    <field name="payloads" type="payloads" indexed="true" stored="true"/>
 
+   <field name="_version_" type="long" indexed="true" stored="true"/>
 
    <!--
      Some fields such as popularity and manu_exact could be modified to
      leverage doc values:
-     <field name="popularity" type="int" indexed="true" stored="true" docValues="true" />
-     <field name="manu_exact" type="string" indexed="false" stored="false" docValues="true" />
-     <field name="cat" type="string" indexed="true" stored="true" docValues="true" multiValued="true"/>
-
+     <field name="popularity" type="int" indexed="true" stored="true" docValues="true" default="0" />
+     <field name="manu_exact" type="string" indexed="false" stored="false" docValues="true" default="" />
 
      Although it would make indexing slightly slower and the index bigger, it
      would also make the index faster to load, more memory-efficient and more
@@ -269,28 +269,8 @@
         is added to the index.  It's used either to index the same field differently,
         or to add multiple fields to the same field for easier/faster searching.  -->
 
-   <copyField source="cat" dest="text"/>
-   <copyField source="name" dest="text"/>
-   <copyField source="manu" dest="text"/>
-   <copyField source="features" dest="text"/>
-   <copyField source="includes" dest="text"/>
-   <copyField source="manu" dest="manu_exact"/>
-
-   <!-- Copy the price into a currency enabled field (default USD) -->
-   <copyField source="price" dest="price_c"/>
-
-   <!-- Text fields from SolrCell to search by default in our catch-all field -->
-   <copyField source="title" dest="text"/>
-   <copyField source="author" dest="text"/>
-   <copyField source="description" dest="text"/>
-   <copyField source="keywords" dest="text"/>
-   <copyField source="content" dest="text"/>
-   <copyField source="content_type" dest="text"/>
-   <copyField source="resourcename" dest="text"/>
-   <copyField source="url" dest="text"/>
-
-   <!-- Create a string version of author for faceting -->
-   <copyField source="author" dest="author_s"/>
+   <copyField source="sentence" dest="includes"/>
+   <copyField source="sentence" dest="sen_text_ws"/>
 	
    <!-- Above, multiple source fields are copied to the [text] field. 
 	  Another way to map multiple source fields to the same 
@@ -468,6 +448,17 @@
         <filter class="solr.SynonymFilterFactory" synonyms="synonyms.txt" ignoreCase="true" expand="true"/>
         <filter class="solr.LowerCaseFilterFactory"/>
       </analyzer>
+    </fieldType>
+
+    <fieldType name="str_general" class="solr.StrField" sortMissingLast="true" omitNorms="true"> 
+   <!--   <analyzer type="index"> 
+	<tokenizer class="solr.KeywordTokenizerFactory"/>	
+	<filter class="solr.LowerCaseFilterFactory" /> 
+      </analyzer>  -->
+<!--      <analyzer type="query"> 
+	<tokenizer class="solr.KeywordTokenizerFactory"/> 
+	<filter class="solr.LowerCaseFilterFactory" /> 
+      </analyzer>  -->
     </fieldType>
 
     <!-- A text field with defaults appropriate for English: it
