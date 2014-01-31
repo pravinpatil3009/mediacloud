@@ -19,7 +19,13 @@
     <version>1.0</version>
 
     <properties>
+
+        <!-- Version of Solr to install -->
+        <solr.version>4.6.0</solr.version>
+
+        <!-- Encoding for source files -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
     </properties>
     
     <profiles>
@@ -69,33 +75,33 @@
         <dependency>
             <groupId>org.apache.solr</groupId>
             <artifactId>solr</artifactId>
-            <version>4.6.0</version>
+            <version>${solr.version}</version>
             <type>war</type>
         </dependency>
         <dependency>
             <groupId>org.apache.solr</groupId>
             <artifactId>solr-cell</artifactId>
-            <version>4.6.0</version>
+            <version>${solr.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.solr</groupId>
             <artifactId>solr-clustering</artifactId>
-            <version>4.6.0</version>
+            <version>${solr.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.solr</groupId>
             <artifactId>solr-langid</artifactId>
-            <version>4.6.0</version>
+            <version>${solr.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.solr</groupId>
             <artifactId>solr-velocity</artifactId>
-            <version>4.6.0</version>
+            <version>${solr.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.solr</groupId>
             <artifactId>solr-analysis-extras</artifactId>
-            <version>4.6.0</version>
+            <version>${solr.version}</version>
         </dependency>
 
         <!-- PostgreSQL -->
