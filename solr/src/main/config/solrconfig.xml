@@ -1138,7 +1138,7 @@
      <requestHandler name="/admin/properties" class="solr.admin.PropertiesRequestHandler" />
      <requestHandler name="/admin/file"       class="solr.admin.ShowFileRequestHandler" >
     -->
-  <!-- If you wish to hide files under ${solr.home}/conf, explicitly
+  <!-- If you wish to hide files under ${solr.home.home}/conf, explicitly
        register the ShowFileRequestHandler using: 
     -->
   <!--

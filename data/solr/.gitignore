@@ -1,0 +1,8 @@
+# Ignore everything in this directory
+*
+# Except this file
+!.gitignore
+
+# ...and except the file that notifies the user to not edit any files in the directory
+!DO_NOT_MANUALLY_EDIT_ANY_FILES_IN_THIS_DIRECTORY
+
