@@ -103,6 +103,16 @@
             <artifactId>solr-analysis-extras</artifactId>
             <version>${solr.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.apache.solr.solr</groupId>
+            <artifactId>solr-dataimporthandler</artifactId>
+            <version>1.4.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.solr.solr</groupId>
+            <artifactId>solr-dataimporthandler-extras</artifactId>
+            <version>1.4.1</version>
+        </dependency>
 
         <!-- PostgreSQL -->
         <dependency>
@@ -177,12 +187,13 @@
                                     <targetPath>${solr.solr.home}</targetPath>
                                     <includes>
                                         <include>solr.xml</include>
+                                        <include>core.properties</include>
                                     </includes>
                                 </resource>
                                 <!-- Copy configuration files -->
                                 <resource>
                                     <directory>${project.basedir}/src/main/config</directory>
-                                    <targetPath>${solr.solr.home}/${solr.default.core.directory}/conf</targetPath>
+                                    <targetPath>${solr.solr.home}/collection1/conf</targetPath>
                                     <excludes>
                                         <exclude>lang</exclude>
                                         <exclude>velocity</exclude>
@@ -192,17 +203,17 @@
                                 <!-- Copy language specific configuration files -->
                                 <resource>
                                     <directory>${project.basedir}/src/main/config/lang</directory>
-                                    <targetPath>${solr.solr.home}/${solr.default.core.directory}/conf/lang</targetPath>
+                                    <targetPath>${solr.solr.home}/collection1/conf/lang</targetPath>
                                 </resource>
                                 <!-- Copy Velocity macros and other files -->
                                 <resource>
                                     <directory>${project.basedir}/src/main/config/velocity</directory>
-                                    <targetPath>${solr.solr.home}/${solr.default.core.directory}/conf/velocity</targetPath>
+                                    <targetPath>${solr.solr.home}/collection1/conf/velocity</targetPath>
                                 </resource>
                                 <!-- Copy XSL style sheets -->
                                 <resource>
                                     <directory>${project.basedir}/src/main/config/xslt</directory>
-                                    <targetPath>${solr.solr.home}/${solr.default.core.directory}/conf/xslt</targetPath>
+                                    <targetPath>${solr.solr.home}/collection1/conf/xslt</targetPath>
                                 </resource>
                             </resources>
                         </configuration>
@@ -234,11 +245,11 @@
                                         <include>solr.xml</include>
                                     </includes>
                                 </resource>
-                                <!-- Remove the conf directory -->
+                                <!-- Remove the conf directory - FIXME does it remove the data too? -->
                                 <resource>
                                     <clean>true</clean>
                                     <cleanEmptyDirectories>true</cleanEmptyDirectories>
-                                    <directory>${solr.solr.home}/${solr.default.core.directory}</directory>
+                                    <directory>${solr.solr.home}/collection1</directory>
                                     <includes>
                                         <include>conf</include>
                                     </includes>
